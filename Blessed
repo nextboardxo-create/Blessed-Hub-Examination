@@ -1,0 +1,268 @@
+--// SERVICES
+local Workspace = game:GetService("Workspace")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+--// CONFIG
+local CONFIG = {
+    HitboxSize = Vector3.new(5, 5, 5),
+    HitboxTransparency = 0.5,
+
+    FOV = 120,
+
+    ESP = true,
+    ESPDistance = 350,
+
+    HighlightColor = Color3.fromRGB(255, 0, 0),
+    TextColor = Color3.fromRGB(255, 0, 0),
+}
+
+--// CACHE
+local processedHeads = {}
+local processedNPCs = {}
+
+--------------------------------------------------
+--// UTIL
+--------------------------------------------------
+
+local function isHumanoidModel(model)
+    return model
+        and model:IsA("Model")
+        and model:FindFirstChildOfClass("Humanoid") ~= nil
+end
+
+local function isPlayerCharacter(model)
+    return model
+        and model:IsA("Model")
+        and Players:GetPlayerFromCharacter(model) ~= nil
+end
+
+local function isNPC(model)
+    if not isHumanoidModel(model) then
+        return false
+    end
+
+    if isPlayerCharacter(model) then
+        return false
+    end
+
+    return true
+end
+
+--------------------------------------------------
+--// HITBOX
+--------------------------------------------------
+
+local function applyHitbox(head)
+    if not head or not head:IsA("BasePart") then
+        return
+    end
+
+    if head.Name ~= "Head" then
+        return
+    end
+
+    local model = head.Parent
+
+    if not isNPC(model) then
+        return
+    end
+
+    if processedHeads[head] then
+        return
+    end
+
+    processedHeads[head] = true
+
+    head.Size = CONFIG.HitboxSize
+    head.CanCollide = false
+    head.CanTouch = true
+    head.Transparency = CONFIG.HitboxTransparency
+end
+
+--------------------------------------------------
+--// ESP
+--------------------------------------------------
+
+local function removeESP(model)
+    if not model then
+        return
+    end
+
+    local highlight = model:FindFirstChild("OptimizedNPC_Highlight")
+    if highlight then
+        highlight:Destroy()
+    end
+
+    local billboard = model:FindFirstChild("OptimizedNPC_UI")
+    if billboard then
+        billboard:Destroy()
+    end
+
+    processedNPCs[model] = nil
+end
+
+local function createESP(model)
+    if not CONFIG.ESP then
+        return
+    end
+
+    if not model or not model:IsA("Model") then
+        return
+    end
+
+    if not model:FindFirstChild("AI") then
+        return
+    end
+
+    local humanoid = model:FindFirstChildOfClass("Humanoid")
+
+    if not humanoid then
+        return
+    end
+
+    if processedNPCs[model] then
+        return
+    end
+
+    processedNPCs[model] = true
+
+    --------------------------------------------------
+    -- HIGHLIGHT
+    --------------------------------------------------
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "OptimizedNPC_Highlight"
+    highlight.Adornee = model
+    highlight.FillColor = CONFIG.HighlightColor
+    highlight.FillTransparency = 0.5
+    highlight.OutlineTransparency = 1
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = model
+
+    --------------------------------------------------
+    -- HEALTH UI
+    --------------------------------------------------
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "OptimizedNPC_UI"
+    billboard.Adornee = model
+    billboard.Size = UDim2.fromOffset(100, 25)
+    billboard.StudsOffset = Vector3.new(0, 4, 0)
+    billboard.AlwaysOnTop = true
+    billboard.MaxDistance = CONFIG.ESPDistance
+    billboard.Parent = model
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = CONFIG.TextColor
+    label.TextStrokeTransparency = 0
+    label.TextScaled = true
+    label.Font = Enum.Font.SourceSansBold
+    label.Parent = billboard
+
+    --------------------------------------------------
+    -- HEALTH UPDATE
+    --------------------------------------------------
+
+    local function updateHealth()
+        if not humanoid.Parent or humanoid.Health <= 0 then
+            removeESP(model)
+            return
+        end
+
+        label.Text = string.format(
+            "%d / %d",
+            math.floor(humanoid.Health),
+            math.floor(humanoid.MaxHealth)
+        )
+    end
+
+    updateHealth()
+
+    local healthConnection
+    healthConnection = humanoid.HealthChanged:Connect(function()
+        if not model.Parent then
+            healthConnection:Disconnect()
+            removeESP(model)
+            return
+        end
+
+        updateHealth()
+    end)
+
+    humanoid.Died:Once(function()
+        removeESP(model)
+
+        if healthConnection then
+            healthConnection:Disconnect()
+        end
+    end)
+
+    model.AncestryChanged:Connect(function(_, parent)
+        if not parent then
+            if healthConnection then
+                healthConnection:Disconnect()
+            end
+
+            processedNPCs[model] = nil
+        end
+    end)
+end
+
+--------------------------------------------------
+--// INITIAL SCAN
+--------------------------------------------------
+
+for _, object in ipairs(Workspace:GetDescendants()) do
+
+    -- Hitbox
+    if object:IsA("BasePart") and object.Name == "Head" then
+        applyHitbox(object)
+    end
+
+    -- ESP
+    if object:IsA("Model") and object:FindFirstChild("AI") then
+        createESP(object)
+    end
+end
+
+--------------------------------------------------
+--// NEW OBJECTS
+--------------------------------------------------
+
+Workspace.DescendantAdded:Connect(function(object)
+
+    if object:IsA("BasePart") then
+        if object.Name == "Head" then
+            task.defer(applyHitbox, object)
+        end
+
+        return
+    end
+
+    if object:IsA("Model") then
+        task.defer(function()
+            if object:FindFirstChild("AI") then
+                createESP(object)
+            end
+        end)
+    end
+end)
+
+--------------------------------------------------
+--// FOV
+--------------------------------------------------
+
+RunService:BindToRenderStep(
+    "OptimizedFixedFOV",
+    Enum.RenderPriority.Camera.Value + 1,
+    function()
+        local camera = Workspace.CurrentCamera
+
+        if camera and camera.FieldOfView ~= CONFIG.FOV then
+            camera.FieldOfView = CONFIG.FOV
+        end
+    end
+)
